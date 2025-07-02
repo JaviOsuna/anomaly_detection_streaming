@@ -35,12 +35,30 @@ This project aims to develop a real-time anomaly detection system for traffic an
 2.  Navigate to the project directory:
 
     ```bash
-    cd AnomalyDetectionProject
+    cd anomaly_detection_streaming
     ```
-3.  Create a virtual environment with Poetry:
+3. To intall Poetry
+    ```powershell
+    curl -sSL https://install.python-poetry.org | python -
+    ```
 
-    ```bash
-    poetry install
+
+4. Create a virtual environment with Poetry (we can see details in the `pyproject.toml` file):
+
+    ```powershell
+    poetry init
+    ```
+
+    ```powershell
+    poetry add pyspark
+    poetry add polars
+    poetry add mlflow
+    poetry add streamlit
+    ```
+
+5. To use the environment you have created with *poetry* we shoud run every time
+    ```powershell
+    poetry run python "file-root"
     ```
 
 ## Usage

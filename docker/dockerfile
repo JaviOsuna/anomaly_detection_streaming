@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+
+# Instala Poetry
+RUN pip install poetry
+
+# Copia los archivos de configuración
+COPY pyproject.toml poetry.lock* /app/
+
+WORKDIR /app
+
+# Instala las dependencias
+RUN poetry install --no-root
+
+# Copia el resto del código
+COPY . /app
