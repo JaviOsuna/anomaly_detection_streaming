@@ -1,0 +1,15 @@
+version: "3.8"
+services:
+  streamlit:
+    build: .
+    command: poetry run streamlit run src/dashboard.py --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+  mlflow:
+    build: .
+    command: poetry run mlflow ui --host 0.0.0.0
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    restart: unless-stopped

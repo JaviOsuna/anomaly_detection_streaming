@@ -1,78 +1,130 @@
-# Real-time Anomaly Detection in Traffic and Pollution Data Streams with Spark Structured Streaming
+# Anomalías en Tiempo Real - Madrid
+## Real-Time Anomalies - Madrid
 
-## Project Description
+## Description
 
-This project aims to develop a real-time anomaly detection system for traffic and pollution data in the city of Madrid, using Apache Spark Structured Streaming and machine learning models. The system will process real-time data streams, identify unusual patterns, and generate alerts to improve traffic management and air quality.
+This project develops a scalable solution based on **Spark Structured Streaming** and **Machine Learning** techniques to detect anomalies in real-time traffic and air quality data in the city of Madrid. The goal is to generate alerts for anomalous situations and provide an interactive visualization for monitoring and decision-making.
 
-## Objectives
+---
 
-*   Implement a real-time data processing pipeline with Spark Structured Streaming.
-*   Integrate traffic and pollution data sources from Madrid.
-*   Develop and train machine learning models for anomaly detection.
-*   Generate real-time alerts for unusual behavior.
-*   Visualize the results in an interactive dashboard with Streamlit.
+## Technologies Used
 
-## Tools and Technologies
+- **Python 3.10**
+- **Poetry** (dependency management)
+- **Apache Spark** (distributed and streaming processing)
+- **Polars** (efficient local data processing)
+- **MLflow** (ML experiment tracking)
+- **Streamlit** (interactive dashboard)
+- **Docker** (reproducible environment)
+- **Docker Compose** (service orchestration)
+- **Jupyter** (optional, for prototyping and exploration)
 
-*   **Language:** Python
-*   **Data Processing:** Apache Spark Structured Streaming (PySpark)
-*   **Machine Learning:** MLlib, Scikit-learn
-*   **Visualization:** Streamlit
-*   **Dependency Management:** Poetry
-*   **Containerization:** Docker
-*   **Version Control:** Git, GitHub
-*   **Experiment Tracking:** MLflow
+---
 
-## Repository Structure
+## Project Structure
 
-## Installation
+```
+anomaly_detection_streaming/
+├── Dockerfile
+├── docker-compose.yml
+├── pyproject.toml
+├── poetry.lock
+├── src/
+│ └── anomalias_madrid/
+│ ├── main.py
+│ └── dashboard.py
+├── notebooks/
+├── tests/
+├── data/
+└── README.md
+```
+---
 
-1.  Clone the repository:
+## Getting Started
 
-    ```bash
-    git clone git@github.com:JaviOsuna/anomaly_detection_streaming.git
-    ```
-2.  Navigate to the project directory:
+### 1. Prerequisites
 
-    ```bash
-    cd anomaly_detection_streaming
-    ```
-3. To intall Poetry
-    ```powershell
-    curl -sSL https://install.python-poetry.org | python -
-    ```
+- **Docker** and **Docker Compose** installed on your system.
+- (Optional, for local development) **Poetry** and **Python 3.10+** installed.
 
+---
 
-4. Create a virtual environment with Poetry (we can see details in the `pyproject.toml` file):
+### 2. Clone the Repository
 
-    ```powershell
-    poetry init
-    ```
+```bash
+git clone https://github.com/tu_usuario/anomaly_detection_streaming.git
+cd anomaly_detection_streaming
+```
 
-    ```powershell
-    poetry add pyspark
-    poetry add polars
-    poetry add mlflow
-    poetry add streamlit
-    ```
+### 3. Start Services with Docker Compose
 
-5. To use the environment you have created with *poetry* we shoud run every time
-    ```powershell
-    poetry run python "file-root"
-    ```
+This will build the image and launch both Streamlit and MLflow UI in separate containers.
 
-## Usage
+```bash
+docker-compose up --build
+```
 
-(Instructions for running the pipeline, training the models, launching the dashboard, etc. will be added here.)
+- **Streamlit** will be available at: http://localhost:8501
+- **MLflow UI** will be available at: http://localhost:5000
 
-## Project Status
+Press `Ctrl+C` to stop the services, or use:
 
-(You can indicate the project's progress, completed tasks, pending tasks, etc. here.)
+```bash
+docker-compose down
+```
+
+### 4. Local Development (optional)
+
+If you prefer to work outside Docker:
+
+1. Install dependencies with Poetry:
+
+```bash
+poetry install
+```
+
+2. Run the main script:
+
+```bash
+poetry run python src/main.py
+```
+
+3. Launch Streamlit:
+
+```bash
+poetry run streamlit run src/dashboard.py
+```
+
+4. Launch MLflow UI:
+
+```bash
+poetry run mlflow ui
+```
+
+## Service Details
+
+### Streamlit
+
+- The visualization dashboard is located at `src/dashboard.py`.
+- Access it at http://localhost:8501 when the service is running.
+
+### MLflow
+
+- The experiment tracking interface is available at http://localhost:5000.
+- Experiments are automatically logged from the code.
+
+## Notes on Docker and Networking
+
+- **IMPORTANT**: Ports 8501 (Streamlit) and 5000 (MLflow) are mapped to your local machine.
+
+## Next Steps
+
+1. Search for and analyze real traffic and air quality data sources for Madrid.
+2. Design the real-time ingestion and processing pipeline with Spark Structured Streaming.
+3. Develop and tune anomaly detection models.
+4. Integrate visualization and alerting system in Streamlit.
+5. Document and test the entire workflow.
 
 ## Contact
 
-(Your name and email address)
-
-## License
-
-(Optional: you can specify the project's license)
+For questions, suggestions, or collaboration, open an issue in the repository or contact the author.

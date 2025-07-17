@@ -19,6 +19,7 @@ def download_traffic():
     """Descarga los datos de tráfico"""
     ensure_dir(DATA_DIR)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fecha_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     xml_filename = f"{DATA_DIR}/traffic_{timestamp}.xml"
     csv_filename = f"{DATA_DIR}/traffic_{timestamp}.csv"
     
@@ -32,7 +33,7 @@ def download_traffic():
         print(f"✓ Descargado: {xml_filename} ({os.path.getsize(xml_filename)} bytes)")
 
         # Convertir a CSV
-        conversion_exitosa = convert_xml_to_csv(xml_filename, csv_filename)
+        conversion_exitosa = convert_xml_to_csv(xml_filename, csv_filename, fecha_hora)
         if conversion_exitosa:
             os.remove(xml_filename)
             print(f"✓ Eliminado archivo XML: {xml_filename}")
@@ -44,7 +45,7 @@ def download_traffic():
     except Exception as e:
         print(f"✗ Error inesperado: {e}")
 
-def convert_xml_to_csv(xml_path, csv_path):
+def convert_xml_to_csv(xml_path, csv_path, fecha_hora):
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
@@ -55,12 +56,14 @@ def convert_xml_to_csv(xml_path, csv_path):
             return False
 
         campos = [elem.tag for elem in puntos[0]]
+        campos = ["fecha_hora"] + campos
 
         with open(csv_path, "w", newline='', encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(campos)
             for punto in puntos:
-                row = [punto.find(campo).text if punto.find(campo) is not None else "" for campo in campos]
+                row = [fecha_hora]
+                row += [punto.find(campo).text if punto.find(campo) is not None else "" for campo in campos]
                 writer.writerow(row)
         print(f"✓ Convertido a CSV: {csv_path}")
         return True
