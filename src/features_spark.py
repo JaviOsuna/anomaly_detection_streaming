@@ -14,18 +14,25 @@ STATS_CSV = "data/store/stats_by_station.csv"
 def spark_with_delta(app="features"):
     return (SparkSession.builder
         .appName(app)
-        .config("spark.sql.extensions","io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog","org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .master("local[4]")
+        .config("spark.driver.memory", "4g")
+        .config("spark.executor.memory", "4g")
+        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+        .config("spark.sql.adaptive.enabled", "false")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.jars.packages", "io.delta:delta-core_2.12:2.4.0")
         .getOrCreate())
 
 def compute_neighbors(coords_pdf):
+    """Calcular vecinos k=3 más cercanos para cada estación."""
     X = coords_pdf[['st_x','st_y']].values
     nbrs = NearestNeighbors(n_neighbors=4, algorithm='kd_tree').fit(X)
     distances, indices = nbrs.kneighbors(X)
     rows = []
     for i, est in enumerate(coords_pdf['ESTACION'].tolist()):
-        neigh_idxs = indices[i][1:4]
+        neigh_idxs = indices[i][1:4]  # Excluir la propia estación
         for j, ni in enumerate(neigh_idxs):
             rows.append({
                 "ESTACION": int(est),
@@ -36,89 +43,105 @@ def compute_neighbors(coords_pdf):
     import pandas as pd
     return pd.DataFrame(rows)
 
-def main():
-    spark = spark_with_delta("features_fusion")
-    spark.sparkContext.setLogLevel("WARN")
+def calculate_features(df):
+    """Calcular todas las features para el DataFrame dado."""
+    print(">>> Calculando features temporales...")
+    
+    # Features temporales básicas
+    df = (df.withColumn("hour", F.hour("fecha_hora"))
+          .withColumn("hour_sin", F.sin(F.lit(2*pi) * F.col("hour")/F.lit(24)))
+          .withColumn("hour_cos", F.cos(F.lit(2*pi) * F.col("hour")/F.lit(24)))
+          .withColumn("dayofweek", F.dayofweek("fecha_hora"))
+          .withColumn("is_weekend", F.when(F.col("dayofweek").isin(1,7), F.lit(1)).otherwise(F.lit(0))))
 
-    if not os.path.exists(MASTER_PATH):
-        raise RuntimeError("No existe master_delta. Ejecuta primero ingest_spark.py")
-
-    df_raw = spark.read.format("delta").load(MASTER_PATH)
-
-    # Si existe maestro features, obtener fechas ya procesadas
-    if os.path.exists(FEATURES_PATH):
-        df_features = spark.read.format("delta").load(FEATURES_PATH)
-        processed_dates = [row['date'] for row in df_features.select(F.to_date("fecha_hora").alias("date")).distinct().collect()]
-        df_to_process = df_raw.filter(~F.to_date("fecha_hora").isin(processed_dates))
-        if df_to_process.rdd.isEmpty():
-            print("No hay datos nuevos para procesar en features.")
-            spark.stop()
-            return
-    else:
-        df_to_process = df_raw
-
-    # Calculamos features solo para datos nuevos
-    df = df_to_process.withColumn("hour", F.hour("fecha_hora")) \
-           .withColumn("hour_sin", F.sin(F.lit(2*pi) * F.col("hour")/F.lit(24))) \
-           .withColumn("hour_cos", F.cos(F.lit(2*pi) * F.col("hour")/F.lit(24))) \
-           .withColumn("dayofweek", F.dayofweek("fecha_hora")) \
-           .withColumn("is_weekend", F.when(F.col("dayofweek").isin(1,7), F.lit(1)).otherwise(F.lit(0)))
-
+    # Holidays españoles
     @F.udf(T.IntegerType())
     def is_es_holiday(ts):
-        if ts is None: return 0
+        if ts is None: 
+            return 0
         try:
             d = ts.date()
             return 1 if d in holidays.CountryHoliday('ES') else 0
         except Exception:
             return 0
+    
     df = df.withColumn("is_holiday", is_es_holiday(F.col("fecha_hora")))
 
+    print(">>> Calculando lags y diferencias...")
+    
+    # Lags y diferencias
     w_order = Window.partitionBy("ESTACION").orderBy("fecha_hora")
-    df = df.withColumn("NO2_lag1", F.lag("NO2", 1).over(w_order)) \
-           .withColumn("NO2_lag2", F.lag("NO2", 2).over(w_order)) \
-           .withColumn("NO2_lag24", F.lag("NO2", 24).over(w_order)) \
-           .withColumn("diff_1", F.col("NO2") - F.col("NO2_lag1")) \
-           .withColumn("pct_change_1", F.col("diff_1") / (F.col("NO2_lag1") + F.lit(1e-9)) * 100.0)
+    df = (df.withColumn("NO2_lag1", F.lag("NO2", 1).over(w_order))
+          .withColumn("NO2_lag2", F.lag("NO2", 2).over(w_order))
+          .withColumn("NO2_lag24", F.lag("NO2", 24).over(w_order))
+          .withColumn("diff_1", F.col("NO2") - F.col("NO2_lag1"))
+          .withColumn("pct_change_1", F.col("diff_1") / (F.col("NO2_lag1") + F.lit(1e-9)) * 100.0))
 
+    print(">>> Calculando rolling windows...")
+    
+    # Rolling windows (usando rangeBetween con timestamp)
     df = df.withColumn("ts_long", F.col("fecha_hora").cast("long"))
     w8  = Window.partitionBy("ESTACION").orderBy("ts_long").rangeBetween(-8*3600, 0)
     w24 = Window.partitionBy("ESTACION").orderBy("ts_long").rangeBetween(-24*3600, 0)
     w168= Window.partitionBy("ESTACION").orderBy("ts_long").rangeBetween(-168*3600, 0)
 
-    df = df.withColumn("rolling_mean_8h",  F.avg("NO2").over(w8)) \
-           .withColumn("rolling_std_8h",   F.stddev_pop("NO2").over(w8)) \
-           .withColumn("rolling_mean_24h", F.avg("NO2").over(w24)) \
-           .withColumn("rolling_std_24h",  F.stddev_pop("NO2").over(w24)) \
-           .withColumn("rolling_mean_168h",F.avg("NO2").over(w168)) \
-           .withColumn("rolling_std_168h", F.stddev_pop("NO2").over(w168))
+    df = (df.withColumn("rolling_mean_8h",  F.avg("NO2").over(w8))
+          .withColumn("rolling_std_8h",   F.stddev_pop("NO2").over(w8))
+          .withColumn("rolling_mean_24h", F.avg("NO2").over(w24))
+          .withColumn("rolling_std_24h",  F.stddev_pop("NO2").over(w24))
+          .withColumn("rolling_mean_168h",F.avg("NO2").over(w168))
+          .withColumn("rolling_std_168h", F.stddev_pop("NO2").over(w168)))
 
-    df = df.withColumn("rolling_std_8h", F.coalesce("rolling_std_8h", F.lit(0.0))) \
-           .withColumn("rolling_z_8h", (F.col("NO2") - F.col("rolling_mean_8h")) / (F.col("rolling_std_8h") + F.lit(1e-9))) \
-           .withColumn("spike_flag_8h", (F.abs(F.col("rolling_z_8h")) > F.lit(3.5)).cast("int"))
+    # Z-scores y spike detection
+    df = (df.withColumn("rolling_std_8h", F.coalesce("rolling_std_8h", F.lit(0.0)))
+          .withColumn("rolling_z_8h", (F.col("NO2") - F.col("rolling_mean_8h")) / (F.col("rolling_std_8h") + F.lit(1e-9)))
+          .withColumn("spike_flag_8h", (F.abs(F.col("rolling_z_8h")) > F.lit(3.5)).cast("int")))
 
+    print(">>> Calculando flags de calidad de datos...")
+    
+    # Flags de calidad de datos
     cnt_per_station = df.groupBy("ESTACION").agg(F.count("*").alias("n_rows"))
-    df = df.join(cnt_per_station, "ESTACION", "left") \
-           .withColumn("small_history_flag", (F.col("n_rows") < F.lit(48)).cast("boolean")) \
-           .withColumn("is_missing_flag", F.col("NO2").isNull()) \
-           .drop("n_rows")
+    df = (df.join(cnt_per_station, "ESTACION", "left")
+          .withColumn("small_history_flag", (F.col("n_rows") < F.lit(48)).cast("boolean"))
+          .withColumn("is_missing_flag", F.col("NO2").isNull())
+          .drop("n_rows"))
 
+    return df
+
+def add_neighbor_features(df, spark):
+    """Añadir features de estaciones vecinas."""
+    print(">>> Calculando vecinos más cercanos...")
+    
+    # Obtener coordenadas únicas
     coords_pdf = df.select("ESTACION","st_x","st_y").distinct().toPandas()
+    
+    # Calcular vecinos
     neighbors_pdf = compute_neighbors(coords_pdf)
     neighbors_pdf.to_csv(NEIGHBORS_CSV, index=False)
     neighbors_sdf = spark.createDataFrame(neighbors_pdf)
 
+    print(">>> Calculando features de vecinos...")
+    
+    # Join con vecinos para obtener promedios
     a = df.alias("a")
     b = df.alias("b")
     neigh_expanded = neighbors_sdf.select("ESTACION", F.col("neighbor").alias("NEIGH"))
+    
     joined = (a.join(neigh_expanded, on="ESTACION", how="left")
-               .join(b, (F.col("NEIGH")==F.col("b.ESTACION")) & (F.col("a.fecha_hora")==F.col("b.fecha_hora")), how="left")
-               .groupBy("a.ESTACION","a.fecha_hora")
-               .agg(F.avg("b.NO2").alias("mean_NO2_neighbors_k3")))
+              .join(b, (F.col("NEIGH")==F.col("b.ESTACION")) & (F.col("a.fecha_hora")==F.col("b.fecha_hora")), how="left")
+              .groupBy("a.ESTACION","a.fecha_hora")
+              .agg(F.avg("b.NO2").alias("mean_NO2_neighbors_k3")))
 
     df = (df.join(joined, on=["ESTACION","fecha_hora"], how="left")
-            .withColumn("neighbor_diff", F.col("NO2") - F.col("mean_NO2_neighbors_k3")))
+          .withColumn("neighbor_diff", F.col("NO2") - F.col("mean_NO2_neighbors_k3")))
 
+    return df
+
+def calculate_station_stats(df):
+    """Calcular estadísticas por estación y guardar en CSV."""
+    print(">>> Calculando estadísticas por estación...")
+    
+    # Quantiles por estación
     quantiles = df.groupBy("ESTACION").agg(
         F.expr("percentile_approx(NO2, 0.5)").alias("median_NO2"),
         F.expr("percentile_approx(NO2, 0.9)").alias("p90_NO2"),
@@ -126,29 +149,81 @@ def main():
         F.count("*").alias("count")
     )
 
+    # MAD (Median Absolute Deviation)
     df_med = df.join(quantiles.select("ESTACION","median_NO2"), "ESTACION", "left") \
                .withColumn("abs_dev", F.abs(F.col("NO2") - F.col("median_NO2")))
     mad = df_med.groupBy("ESTACION").agg(F.expr("percentile_approx(abs_dev, 0.5)").alias("MAD_NO2"))
+    
+    # Combinar y guardar
     stats = (quantiles.join(mad, "ESTACION", "left")).toPandas()
     stats.to_csv(STATS_CSV, index=False)
+    print(f">>> Estadísticas guardadas en: {STATS_CSV}")
 
-    # Unir con features existentes si hay
+def main():
+    spark = spark_with_delta("features_fusion")
+    spark.sparkContext.setLogLevel("WARN")
+
+    if not os.path.exists(MASTER_PATH):
+        raise RuntimeError("No existe master_delta. Ejecuta primero ingest_spark.py")
+
+    print("🚀 Iniciando cálculo de features...")
+    
+    # Leer datos base
+    df_raw = spark.read.format("delta").load(MASTER_PATH)
+    print(f">>> Master delta tiene {df_raw.count()} filas")
+
+    # Detectar registros nuevos (no procesados aún)
     if os.path.exists(FEATURES_PATH):
-        df_features = spark.read.format("delta").load(FEATURES_PATH)
-        combined = df_features.unionByName(df)
+        print(">>> Detectando registros ya procesados...")
+        df_features_existing = spark.read.format("delta").load(FEATURES_PATH)
+        existing_keys = df_features_existing.select("ESTACION","fecha_hora").dropDuplicates()
+        df_to_process = df_raw.join(existing_keys, ["ESTACION","fecha_hora"], "left_anti")
+        existing_count = df_features_existing.count()
+        print(f">>> Features existentes: {existing_count} filas")
     else:
-        combined = df
+        print(">>> No hay features previas, procesando todo el master...")
+        df_to_process = df_raw
+        existing_count = 0
 
-    combined = combined.withColumn("date", F.to_date("fecha_hora"))
-    (combined.write.format("delta")
-     .mode("overwrite")
-     .partitionBy("date")
-     .save(FEATURES_PATH))
+    new_count = df_to_process.count()
+    if new_count == 0:
+        print("✅ No hay registros nuevos para procesar en features.")
+        spark.stop()
+        return
 
-    print("Features OK.")
-    print(f"- Delta features: {FEATURES_PATH}")
-    print(f"- Vecinos CSV: {NEIGHBORS_CSV}")
-    print(f"- Stats CSV: {STATS_CSV}")
+    print(f">>> Procesando {new_count} registros nuevos...")
+
+    # Calcular features
+    df_with_features = calculate_features(df_to_process)
+    df_with_features = add_neighbor_features(df_with_features, spark)
+    
+    # Calcular estadísticas (sobre todo el dataset disponible, no solo nuevos)
+    all_data = spark.read.format("delta").load(MASTER_PATH)
+    calculate_station_stats(all_data)
+
+    # Preparar para guardar
+    df_out = df_with_features.withColumn("date", F.to_date("fecha_hora"))
+
+    # Guardar en modo append
+    print(">>> Guardando features en Delta...")
+    (df_out.write.format("delta")
+        .mode("append")
+        .partitionBy("date")
+        .save(FEATURES_PATH))
+
+    # Resumen final
+    total_features = spark.read.format("delta").load(FEATURES_PATH).count()
+    dates = spark.read.format("delta").load(FEATURES_PATH) \
+                .agg(F.min("fecha_hora").alias("min_ts"), F.max("fecha_hora").alias("max_ts")).collect()[0]
+    
+    print(f"✅ Features completadas:")
+    print(f"   - Registros nuevos procesados: {new_count}")
+    print(f"   - Total en master_features_delta: {total_features}")
+    print(f"   - Rango temporal: {dates['min_ts']} -> {dates['max_ts']}")
+    print(f"   - Archivos generados:")
+    print(f"     * {FEATURES_PATH}")
+    print(f"     * {NEIGHBORS_CSV}")
+    print(f"     * {STATS_CSV}")
 
     spark.stop()
 

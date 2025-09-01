@@ -22,8 +22,14 @@ def move_files_to_processed(files):
 def spark_with_delta(app="ingest"):
     return (SparkSession.builder
         .appName(app)
-        .config("spark.sql.extensions","io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog","org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .master("local[4]")
+        .config("spark.driver.memory", "4g")
+        .config("spark.executor.memory", "4g")
+        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+        .config("spark.sql.adaptive.enabled", "false")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.jars.packages", "io.delta:delta-core_2.12:2.4.0")
         .getOrCreate())
 
@@ -53,35 +59,44 @@ def main():
 
     # Leer solo los archivos nuevos
     df_new = spark.read.option("header", True).schema(schema).csv(new_files)
-    df_new = df_new.withColumn("fecha_hora", F.to_timestamp("fecha_hora", "yyyy-MM-dd HH:mm:ss")) \
-                   .dropna(subset=["ESTACION","fecha_hora"])
+    df_new = (
+        df_new.withColumn("fecha_hora", F.to_timestamp("fecha_hora", "yyyy-MM-dd HH:mm:ss"))
+              .dropna(subset=["ESTACION","fecha_hora"])
+              .withColumn("date", F.to_date("fecha_hora"))
+    )
 
     if df_new.rdd.isEmpty():
-        print("No hay datos nuevos en los archivos.")
+        print("No hay datos válidos en los archivos nuevos.")
         spark.stop()
         return
 
-    df_new = df_new.withColumn("date", F.to_date("fecha_hora"))
-
     if os.path.exists(MASTER_PATH):
         df_master = spark.read.format("delta").load(MASTER_PATH)
-        combined = df_master.unionByName(df_new)
-    else:
-        combined = df_new
+        # Filtrar registros *verdaderamente nuevos*
+        df_new = df_new.join(df_master.select("ESTACION","fecha_hora").dropDuplicates(),
+                             ["ESTACION","fecha_hora"], "left_anti")
 
-    dedup = combined.dropDuplicates(["ESTACION","fecha_hora"])
+    if df_new.rdd.isEmpty():
+        print("No hay registros nuevos que añadir (posibles duplicados).")
+        spark.stop()
+        return
 
-    (dedup.write.format("delta").mode("overwrite")
-     .partitionBy("date").save(MASTER_PATH))
+    # Guardar en modo append para mantener histórico
+    (df_new.write.format("delta")
+        .mode("append")
+        .partitionBy("date")
+        .save(MASTER_PATH))
 
-    row_cnt = dedup.count()
-    dates = dedup.agg(F.min("fecha_hora").alias("min_ts"), F.max("fecha_hora").alias("max_ts")).collect()[0]
-    est_cnt = dedup.select("ESTACION").distinct().count()
-    print(f"Ingesta OK. Filas: {row_cnt}, Estaciones: {est_cnt}, Rango: {dates['min_ts']} -> {dates['max_ts']}")
+    # Recalcular info resumen del master completo
+    df_master_final = spark.read.format("delta").load(MASTER_PATH)
+    row_cnt = df_master_final.count()
+    dates = df_master_final.agg(F.min("fecha_hora").alias("min_ts"), F.max("fecha_hora").alias("max_ts")).collect()[0]
+    est_cnt = df_master_final.select("ESTACION").distinct().count()
+    print(f"Ingesta OK. Total filas: {row_cnt}, Estaciones: {est_cnt}, Rango: {dates['min_ts']} -> {dates['max_ts']}")
 
     spark.stop()
 
-    # Mover archivos procesados para evitar reprocesos
+    # Mover csv a fusion_processed
     move_files_to_processed(new_files)
     print(f"Archivos procesados movidos a {FUSION_PROCESSED_PATH}")
 

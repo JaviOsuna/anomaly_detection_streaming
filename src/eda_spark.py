@@ -10,11 +10,17 @@ STATS_CSV = "data/store/stats_by_station.csv"
 
 def spark_with_delta(app="eda"):
     return (SparkSession.builder
-        .appName(app)
-        .config("spark.sql.extensions","io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog","org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.jars.packages", "io.delta:delta-core_2.12:2.4.0")
-        .getOrCreate())
+            .appName(app)
+            .master("local[4]")  # 2 hilos; sube a 4 si tu máquina lo soporta
+            .config("spark.driver.memory", "4g")
+            .config("spark.executor.memory", "4g")
+            .config("spark.sql.shuffle.partitions", "4")  # baja shuffles
+            .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+            .config("spark.sql.adaptive.enabled", "false")  # Streaming lo desactiva igual, evitamos overhead
+            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+            .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+            .config("spark.jars.packages", "io.delta:delta-core_2.12:2.4.0")
+            .getOrCreate())
 
 def compute_neighbors(coords_pdf):
     X = coords_pdf[['st_x','st_y']].values
